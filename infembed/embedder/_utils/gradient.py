@@ -1,6 +1,46 @@
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union, Any, cast
+import logging
 import warnings
 from infembed.embedder._utils.sample_gradient import SampleGradientWrapper
+
+# One-time diagnostic: which model ids we already warned about unused params
+_UNUSED_PARAMS_WARNED: set = set()
+
+
+def _log_unused_params_once(
+    model: Module,
+    layer_modules: Optional[List[Module]],
+    params: Tuple[Tensor, ...],
+    grad_0: Tuple[Optional[Tensor], ...],
+) -> None:
+    """Log which parameters got None gradient (e.g. requires_grad=False) once per model."""
+    global _UNUSED_PARAMS_WARNED
+    if id(model) in _UNUSED_PARAMS_WARNED:
+        return
+    _UNUSED_PARAMS_WARNED.add(id(model))
+    unused = [i for i, g in enumerate(grad_0) if g is None]
+    if not unused:
+        return
+    if layer_modules is None:
+        names = [n for n, _ in model.named_parameters()]
+        if len(names) == len(params):
+            unused_names = [names[i] for i in unused]
+            logging.warning(
+                "InfEmbed predict: %d parameter(s) received no gradient (unused in graph or requires_grad=False). "
+                "Filling with zeros so projection dimension matches fit. Unused (first 20): %s",
+                len(unused),
+                unused_names[:20],
+            )
+        else:
+            logging.warning(
+                "InfEmbed predict: %d parameter(s) received no gradient. Filling with zeros.",
+                len(unused),
+            )
+    else:
+        logging.warning(
+            "InfEmbed predict: %d parameter(s) received no gradient (layer_modules). Filling with zeros.",
+            len(unused),
+        )
 from torch import Tensor
 from torch.nn import Module
 import torch
@@ -229,18 +269,34 @@ def _compute_jacobian_wrt_params(
 
         if layer_modules is not None:
             layer_parameters = _extract_parameters_from_layers(layer_modules)
+        params = tuple(
+            model.parameters() if layer_modules is None else layer_parameters
+        )
         grads_list = [
             torch.autograd.grad(
                 outputs=out[i],
-                inputs=cast(
-                    Union[Tensor, Sequence[Tensor]],
-                    model.parameters() if layer_modules is None else layer_parameters,
-                ),
+                inputs=params,
                 grad_outputs=torch.ones_like(out[i]),
                 retain_graph=True,
+                allow_unused=True,
             )
             for i in range(out.shape[0])
         ]
-        grads = tuple([torch.stack(x) for x in zip(*grads_list)])
+        # allow_unused=True returns None for params not in the graph (e.g. requires_grad=False
+        # after checkpoint load, such as normalizer params in diffusion policies). Fill with zeros
+        # so projection dimension matches fit; unused params contribute zero to the embedding.
+        grads_list_filled = []
+        for grad_i in grads_list:
+            filled = []
+            for g, p in zip(grad_i, params):
+                if g is None:
+                    filled.append(p.new_zeros(p.shape))
+                else:
+                    filled.append(g)
+            grads_list_filled.append(tuple(filled))
+        # One-time diagnostic: log which params were unused (e.g. normalizer in diffusion)
+        if grads_list and any(g is None for g, p in zip(grads_list[0], params)):
+            _log_unused_params_once(model, layer_modules, params, grads_list[0])
+        grads = tuple([torch.stack(x) for x in zip(*grads_list_filled)])
 
         return tuple(grads)
