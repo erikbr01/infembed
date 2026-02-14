@@ -1,6 +1,10 @@
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union, Any, cast
 import logging
 import warnings
+from torch import Tensor
+from torch.nn import Module
+import torch
+import torch.nn as nn
 from infembed.embedder._utils.sample_gradient import SampleGradientWrapper
 
 # One-time diagnostic: which model ids we already warned about unused params
@@ -41,10 +45,6 @@ def _log_unused_params_once(
             "InfEmbed predict: %d parameter(s) received no gradient (layer_modules). Filling with zeros.",
             len(unused),
         )
-from torch import Tensor
-from torch.nn import Module
-import torch
-import torch.nn as nn
 
 
 SAMPLEWISE_GRADS_PER_BATCH_SUPPORTED_LAYERS = [
