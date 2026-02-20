@@ -170,16 +170,15 @@ def _set_active_parameters(
         layers = ["entire model"]
         layer_modules = [model]
 
-    # set the parameters in supported layers to true
+    # set the parameters in supported layers to true (expected when using entire model)
     for layer, layer_module in zip(layers, layer_modules):
         for name, param in layer_module.named_parameters():
             if not param.requires_grad:
-                warnings.warn(
-                    "Setting required grads for layer: {}, name: {}".format(layer, name)
-                )
                 param.requires_grad = True
 
-    print('consider gradients in the following layers:', layer_modules)
+    print('consider gradients in the following layers:', layers)
+    if len(layers) > 20:
+        print('  (%d layers total)' % len(layers))
     return layer_modules
 
 
